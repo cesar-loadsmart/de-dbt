@@ -1,0 +1,8 @@
+.vscode/launch.json
+.vscode/settings.json
+.idea
+
+de_dbt/profiles_ci/profiles.yml
+de_dbt/profiles_ci_qa/profiles.yml
+vars.sh
+.env

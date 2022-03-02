@@ -1,0 +1,286 @@
+version: 2.1
+jobs:
+  deploy-sql-de-dbt-qa:
+    machine: true
+
+    steps:
+      - checkout
+      - setup-vpn
+      - install-psql
+      - run-vpn
+      - run-de-dbt-qa-deployment
+      - run-impacted-qa-view-test
+  
+  deploy-sql-de-dbt-prod:
+    machine: true
+
+    steps:
+      - checkout
+      - setup-vpn
+      - install-psql
+      - run-vpn
+      - run-de-dbt-deployment
+      - run-impacted-view-test
+
+
+  build-de-dbt-qa-image:
+    docker:
+      - image: ${AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/lumper:latest
+        aws_auth:
+          aws_access_key_id: ${AWS_ACCESS_KEY_ID}
+          aws_secret_access_key: ${AWS_SECRET_ACCESS_KEY}
+    steps:
+      - checkout
+      - setup_remote_docker
+
+      - run:
+          name: Build docker image
+          command: lumper build aws --project de-dbt --build-arg PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL} --build-arg NPM_TOKEN=${NPM_TOKEN} --build-arg RELEASE=${CIRCLE_TAG:-${CIRCLE_SHA1:0:8}} --tag ${CIRCLE_BRANCH}
+
+      - run:
+          name: Push image to registry
+          command: lumper push aws --project de-dbt --tag ${CIRCLE_BRANCH}
+
+
+  build-de-dbt-prod-image:
+    docker:
+      - image: ${AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/lumper:latest
+        aws_auth:
+          aws_access_key_id: ${AWS_ACCESS_KEY_ID}
+          aws_secret_access_key: ${AWS_SECRET_ACCESS_KEY}
+    steps:
+      - checkout
+      - setup_remote_docker
+
+      - run: 
+          name: replacers
+          command: |
+            find etl -name *.sql | sort | xargs sed -i -e 's/de_dbt_qa/de_dbt/g'
+            find etl -name *.sql | sort | xargs sed -i -e 's/odin_qa/odin/g'          
+
+      - run:
+          name: Build docker image
+          command: lumper build aws --project de-dbt --build-arg PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL} --build-arg NPM_TOKEN=${NPM_TOKEN} --build-arg RELEASE=${CIRCLE_TAG:-${CIRCLE_SHA1:0:8}} --tag ${CIRCLE_BRANCH}
+
+      - run:
+          name: Push image to registry
+          command: lumper push aws --project de-dbt --tag ${CIRCLE_BRANCH}
+
+  compile-dbt-dags-upload-qa:
+    machine:
+      image: ubuntu-2004:202101-01
+    steps:
+      - checkout
+      - setup-vpn
+      - run-vpn
+      - run:
+          name: Install Python deps in a virtual environment
+          command: |
+            pyenv versions
+            pyenv global 3.9.1
+            python -m venv envcircle
+            . envcircle/bin/activate
+            pip install PyYAML
+            pip install --no-use-pep517 snowflake-connector-python==2.3.6
+            pip install psycopg2-binary==2.9.3
+            pip install dbt==0.21.1
+            pip install fal==0.2.6
+            pip install sqlalchemy-redshift==0.8.9
+            pip install markupsafe==2.0.1
+            # echo "export REDSHIFT_HOST=${ANALYSISDB_HOST_URL}" >> $BASH_ENV
+            # echo "export REDSHIFT_USER=${ANALYSISDB_USER_URL}" >> $BASH_ENV
+            # echo "export REDSHIFT_PASS=${ANALYSISDB_PASSWORD_URL}" >> $BASH_ENV
+            # echo "export REDSHIFT_PORT=${ANALYSISDB_PORT_URL}" >> $BASH_ENV
+      - run:
+          name: Unnamed Step
+          command: |
+            echo $ANALYSISDB_HOST_URL
+            . envcircle/bin/activate
+            cd de_dbt
+            dbt compile --profiles-dir profiles_ci_qa
+            python compile.py profiles_ci_qa
+            AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID_BI_BUCKET_QA} AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY_BI_BUCKET_QA} aws s3 sync dags ${S3_DAG_BUCKET_NAME_QA} --region us-east-1
+          no_output_timeout: 60m
+
+  compile-dbt-dags-upload:
+    machine:
+      image: ubuntu-2004:202101-01
+    steps:
+      - checkout
+      - setup-vpn
+      - run-vpn
+      - run:
+          name: Install Python deps in a virtual environment
+          command: |
+            pyenv versions
+            pyenv global 3.9.1
+            python -m venv envcircle
+            . envcircle/bin/activate
+            pip install PyYAML
+            pip install --no-use-pep517 snowflake-connector-python==2.3.6
+            pip install psycopg2-binary==2.9.3
+            pip install dbt==0.21.1
+            pip install fal==0.2.6
+            pip install sqlalchemy-redshift==0.8.9
+            pip install markupsafe==2.0.1
+            # echo "export REDSHIFT_HOST=${ANALYSISDB_HOST_URL}" >> $BASH_ENV
+            # echo "export REDSHIFT_USER=${ANALYSISDB_USER_URL}" >> $BASH_ENV
+            # echo "export REDSHIFT_PASS=${ANALYSISDB_PASSWORD_URL}" >> $BASH_ENV
+            # echo "export REDSHIFT_PORT=${ANALYSISDB_PORT_URL}" >> $BASH_ENV
+      - run:
+          name: Unnamed Step
+          command: |
+            echo $ANALYSISDB_HOST_URL
+            . envcircle/bin/activate
+            cd de_dbt
+            dbt compile --profiles-dir profiles_ci
+            python compile.py
+            AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID_BI_BUCKET_PROD} AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY_BI_BUCKET_PROD} aws s3 sync dags ${S3_DAG_BUCKET_NAME_PROD} --region us-east-1
+          no_output_timeout: 60m
+     
+  build-dbt-image:
+    docker:
+      - image: ${AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/lumper:latest
+        aws_auth:
+          aws_access_key_id: ${AWS_ACCESS_KEY_ID}
+          aws_secret_access_key: ${AWS_SECRET_ACCESS_KEY}
+    steps:
+      - checkout
+      - setup_remote_docker
+      - build-dbt-image
+
+commands:
+  setup-vpn:
+    steps:
+      - run:  
+          name: Setup VPN
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y openvpn
+            echo $VPN_PROFILE | base64 --decode > /home/circleci/config.ovpn
+            echo $VPN_AUTH | base64 --decode > /home/circleci/vpn_auth.conf
+
+  install-psql:
+    steps:
+      - run:  
+          name: Install Psql
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y postgresql-client ca-certificates            
+
+  run-vpn:
+    steps:
+      - run:  
+          name: Connect on VPN
+          command: |
+            sudo openvpn --config /home/circleci/config.ovpn --auth-user-pass /home/circleci/vpn_auth.conf > openvpn.log 2>&1 &
+            sleep 10
+
+  run-de-dbt-qa-deployment:
+    steps:
+      - run:
+          name: Deploy changes on DE-DBT QA (schema de_dbt_qa)
+          no_output_timeout: 40m
+          command: |
+            find etl -name *.sql | sort | xargs -l sed -i -e 's/de_dbt\./de_dbt_qa\./g'
+            psql ${ANALYSISDB_URL} -c "select 'Checking the VPN connection'" &> /dev/null || true
+            cd /home/circleci
+            git clone $CIRCLE_REPOSITORY_URL
+            cd /home/circleci/project
+            git diff --name-only --diff-filter=D --pretty="" origin..HEAD | grep '.*\.sql$' | xargs -I % sh -c 'cat /home/circleci/de_dbt/% | grep -ioP "create view\s+\K\w+\W\w+"' | sort | uniq | xargs -I % sh -c 'echo Dropping the deleted .sql view: %; psql ${ANALYSISDB_URL} -c "drop view if exists %" 2>&1' | tee -a psql_de_dbt_qa.log || true ;
+            git diff --name-only --diff-filter=ACMd --pretty="" origin..HEAD | grep 'etl/.*\.sql$' | sort | uniq | xargs -I % sh -c 'echo running: %; psql ${ANALYSISDB_URL} -f % 2>&1' | tee -a psql_de_dbt_qa.log || true
+            if grep -q -i -e "error" -e "No such file or directory" psql_de_dbt_qa.log; then echo "Script execution found errors, check CircleCI logs"; exit -1; else echo "All scripts executed successfully!"; fi;
+            
+
+  run-impacted-qa-view-test:
+    steps:
+      - run:
+          name: Test changes impact on qa views
+          no_output_timeout: 40m
+          command: |
+            psql ${ANALYSISDB_URL} -c "select 'Checking the VPN connection'" &> /dev/null || true
+            git diff --name-only --diff-filter=ACMD --pretty="" origin..HEAD | sort | uniq | \
+            grep '.*\.sql$' | xargs -I % sh -c 'cat % | grep -ioP "create view\s+\K\w+\W\w+"' | sort | uniq | \
+            xargs -I % sh -c 'echo "select lower(trim(table_schema)) || '\''.'\'' || lower(trim(table_name)) as view_name from information_schema.views where lower(view_definition) like '\'#'%'#\'' order by 1"' | \
+            sed -e 's/#/%/g' -e 's/'\''/\\'\''/g' | xargs -I % sh -c 'psql ${ANALYSISDB_URL} -t -c "'%'"' | sort | uniq | \
+            sed -e '/^$/d' -e 's/^[ \t]*//;s/[ \t]*$//' | xargs -I % sh -c 'echo Running test on impacted view: %; psql ${ANALYSISDB_URL} -c "select 1 as view_test from % limit 1" 2>&1' | \
+            tee -a psql_impact_qa_view_test.log || true
+            if grep -q -i "error" psql_impact_qa_view_test.log; then echo "Test execution on impacted qa views found errors, check CircleCI logs"; exit -1; else echo "All impacted qa view tests executed successfully!"; fi;
+
+  run-de-dbt-deployment:
+    steps:
+      - run:
+          name: Deploy changes on DE-DBT Production (schema de-dbt)
+          no_output_timeout: 40m
+          command: |
+            find etl -name *.sql | sort |  xargs -l sed -i -e 's/de_dbt_qa\./de_dbt\./g'
+            psql ${ANALYSISDB_URL} -c "select 'Checking the VPN connection'" &> /dev/null || true
+            cd /home/circleci
+            git clone $CIRCLE_REPOSITORY_URL
+            cd /home/circleci/project
+            git diff --name-only --diff-filter=D --pretty="" origin..HEAD | grep '.*\.sql$' | xargs -I % sh -c 'cat /home/circleci/de_dbt/% | grep -ioP "create view\s+\K\w+\W\w+"' | sort | uniq | xargs -I % sh -c 'echo Dropping the deleted .sql view: %; psql ${ANALYSISDB_URL} -c "drop view if exists %" 2>&1' | tee -a psql_de_dbt.log || true ;
+            git diff --name-only --diff-filter=ACMd --pretty="" master~...$CIRCLE_SHA1 | grep 'etl/.*\.sql$' | sort | uniq | xargs -I % sh -c 'echo running: %; psql ${ANALYSISDB_URL} -f % 2>&1' | tee -a psql_de_dbt.log || true
+            if grep -q -i -e "error" -e "No such file or directory" psql_de_dbt.log; then echo "Script execution found errors, check CircleCI logs"; exit -1; else echo "All scripts executed successfully!"; fi;
+
+  run-impacted-view-test:
+    steps:
+      - run:
+          name: Test changes impact on prod views
+          no_output_timeout: 40m
+          command: |
+            psql ${ANALYSISDB_URL} -c "select 'Checking the VPN connection'" &> /dev/null || true
+            git diff --name-only --diff-filter=ACMD --pretty="" master~...$CIRCLE_SHA1 | sort | uniq | \
+            grep '.*\.sql$' | xargs -I % sh -c 'cat % | grep -ioP "create view\s+\K\w+\W\w+"' | sort | uniq | \
+            xargs -I % sh -c 'echo "select lower(trim(table_schema)) || '\''.'\'' || lower(trim(table_name)) as view_name from information_schema.views where lower(view_definition) like '\'#'%'#\'' order by 1"' | \
+            sed -e 's/#/%/g' -e 's/'\''/\\'\''/g' | xargs -I % sh -c 'psql ${ANALYSISDB_URL} -t -c "'%'"' | sort | uniq | \
+            sed -e '/^$/d' -e 's/^[ \t]*//;s/[ \t]*$//' | xargs -I % sh -c 'echo Running test on impacted view: %; psql ${ANALYSISDB_URL} -c "select 1 as view_test from % limit 1" 2>&1' | \
+            tee -a psql_impact_view_test.log || true
+            if grep -q -i "error" psql_impact_view_test.log; then echo "Test execution on impacted views found errors, check CircleCI logs"; exit -1; else echo "All impacted view tests executed successfully!"; fi;
+
+  build-dbt-image:
+    steps:
+      - run:
+          name: Build docker image
+          command: lumper build aws --project de-dbt --file docker_dbt/Dockerfile --build-arg PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL} --build-arg NPM_TOKEN=${NPM_TOKEN} --build-arg RELEASE=${CIRCLE_TAG:-${CIRCLE_SHA1:0:8}} --tag ${CIRCLE_BRANCH}
+
+      - run:
+          name: Push image to registry
+          command: lumper push aws --project de-dbt --tag ${CIRCLE_BRANCH}
+
+workflows:
+  version: 2.1
+  deploy:
+    jobs:
+      - compile-dbt-dags-upload-qa:
+          context: org-global
+          filters:
+            branches:
+              only:
+                - qa  
+
+      - build-dbt-image:
+          name: build-dbt-image-qa
+          context: org-global
+          requires:
+            - compile-dbt-dags-upload-qa
+          filters:
+            branches:
+              only:
+                - qa  
+
+
+      - compile-dbt-dags-upload:
+          context: org-global
+          filters:
+            branches:
+              only:
+                - master   
+
+      - build-dbt-image:
+          context: org-global
+          requires:
+            - compile-dbt-dags-upload
+          filters:
+            branches:
+              only:
+                - master   

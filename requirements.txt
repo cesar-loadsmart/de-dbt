@@ -1,0 +1,6 @@
+# PyICU==2.6
+psycopg2-binary==2.9.3
+dbt==0.21.1
+fal==0.2.6
+sqlalchemy-redshift==0.8.9
+markupsafe==2.0.1

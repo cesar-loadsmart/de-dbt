@@ -1,0 +1,25 @@
+{{ config(schema='odinprep_dbt_qa', materialized='table', unique_key='id', sort='id', dist='id', tags=["superset"]) }}
+select
+	id,
+	cache_timeout,
+	created_by_fk,
+	changed_by_fk,
+	convert_timezone('America/New_York', created_on) as created_on,
+	convert_timezone('America/New_York', changed_on) as changed_on,
+	database_id,
+	extra,
+	filter_select_enabled,
+	is_featured,
+	is_sqllab_view,
+	main_dttm_col,
+	"offset",
+	params,
+	perm,
+	schema,
+	schema_perm,
+	sql,
+	table_name,
+	template_params,  
+	uuid,
+  	convert_timezone('America/New_York', getdate()) as dw_loaded_at
+from {{ source('superset', 'tables') }} 

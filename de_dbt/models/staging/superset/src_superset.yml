@@ -1,0 +1,27 @@
+version: 2
+
+sources:
+  - name: odin_qa
+    tables:
+     - name: dim_time
+  - name: odinprep_dbt_qa
+    tables:
+     - name: stg_superset_tables_scraped_by_query
+  - name: superset
+    tables:
+     - name: ab_user
+     - name: dbs
+     - name: query
+     - name: tables
+     - name: slices
+  
+models:
+  - name: stg_superset_query_sql
+    description: Superset data scraping model
+    config:
+      materialized: table
+    meta:
+      owner: "@cesar.santos"
+      fal:
+        scripts:
+          - models/staging/superset/stg_superset_query_data_scraping.py
